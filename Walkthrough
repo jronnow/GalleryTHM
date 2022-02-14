@@ -1,0 +1,117 @@
+Question 1: How many ports are open?
+
+This is a pretty straightforward nmap scan:
+
+nmap -vvvv -A -p- [TARGET_IP]
+
+Which quickly returns that ports 80 and 8080 are open. The scan would take a lot longer to complete than this, so if we simply enter 2 in the answer field, we see that these are the only open ports. Methinks we'll be hunting some OWASP vulnerabilities today.
+
+Answer: 2
+
+Question 2: What's the name of the CMS?
+
+Let's spin up Firefox and take a look at this landing page: http://[TARGET_IP]
+
+We're greeted with the Apache2 Ubuntu default page. Curious. Let's try port 8080: [TARGET_IP]:8080
+
+A login screen. Progress!
+
+At the top of the login screen is the phrase "Simple Image Gallery System", and as it turns out, "Simple Image Gallery" is what the question is looking for.
+
+Answer: Simple Image Gallery
+
+Question 3: What's the hash password of the admin user?
+
+For this we need to dig a bit deeper than just glancing at the open ports. Luckily, it turns out that gaining access is a pretty easy SQLi:
+
+username: admin' or '1'='1'#
+password: a
+
+And look at that, we're in. But how do we find the admin's password hash? Let's poke around a bit.
+
+Visiting the "My Account" page, we see that we can change the admin password if we wish, but that might screw us over when we try to pull the hash, so let's leave that alone for now. We've established that we can always get in via SQLi if we need to later.
+
+On the "Albums" tab, there's an Add New function, and when you open an album, you can upload a file. Time to pop a reverse shell!
+
+Using the standard PHP reverse shell (you can get this from Pentestmonkey or if you're using the THM AttackBox it's in /usr/share/webshells/php), we configure our listing IP and port (I used 1337), start a listener with nc -lvnp 1337, and upload the shell. Then, open the new "image" to activate it.
+
+We now have a reverse shell, and whoami reveals that we are www-data. Excellent! Time to stabilize our shell.
+
+Like the rookie I am, I first tried to stabilize the shell with my usual:
+
+python -c 'import pty; pty.spawn("/bin/bash")'
+
+Which did nothing, since python isn't installed on this machine. Fortunately, after some head-scratching, which python3 clued me in to use:
+
+python3 -c 'import pty; pty.spawn("/bin/bash")'
+
+Love single-character roadblocks. Anyway, now we've got a stable shell going. Let's poke around.
+
+Mike's home directory contains user.txt, but www-data isn't allowed to read it, so we'll need to come back to it later.
+
+Looking in /var/www/html/gallery, where the config stuff for the web server is kept, we find an interesting file: intialize.php. Catting that out, we find some information that at first wasn't all that comprehensible to me (SQL tools aren't a great strength of mine at the moment). But after quite a bit of research, trial, and error, I managed to login to mysql and run the following set of commands:
+
+mysql -u gallery_user -p passw0rd321
+show databases;
+use gallery_db;
+show tables;
+select * from users;
+
+And bing bang boom, just like that we've grabbed a password hash.
+
+Answer: a228b12a08b6527e7978cbe5d914531c
+
+Sheeh, that was a long one. Luckily we can now continue enumeration.
+
+Question 4: What's the user flag?
+
+While poking around in here I found something interesting in /var/backups: an unsecured directory called mike_home_backup, containing a documents folder with a list of some of Mike's passwords. Spotify and Netflix aren't relevant to us, but it also lists a TryHackMe password: darkhacker123. Let's try and su into Mike.
+
+su mike
+Password: darkhacker123
+
+su: Authentication failure
+
+Well, drat. I thought it was gonna be easy. But this mike_home_backup is too good to pass up, so let's keep looking around in it. cding out of the Documents, we can ls -la to see everything. Looks like we've actually got a bash_history; I wonder if there's anything useful in here?
+
+sudo -lb3stpassw0rdbr0xx
+
+Aha. So Mike's password is b3stpassw0rdbr0xx. Trying to su into Mike with this will indeed get us into his account, and now we can read user.txt.
+
+Answer: THM{af05cd30bfed67849befd546ef}
+
+Question 5: What's the root flag?
+
+Alright, so we're Mike now. Big whup - he still can't read root's stuff. But we just found out that Mike was curious about what commands he might be able to run *as* root, so why don't we start there?
+
+A sudo -l informs us that Mike can run a very interesting command as root: /opt/rootkit.sh. Rootkit isn't a word I expected to encounter here!
+In any case, let's run this and see what we get.
+
+sudo /bin/bash /opt/rootkit.sh
+
+We're greeted with the following:
+
+Would you like to versioncheck, update, list or read the report ?
+
+Interesting. Usually when engaged in a CTF, one should read everything one can get one's hands on, so let's see what read returns.
+
+Error opening terminal: unknown
+
+Well, it turns out after much frustration that my shell isn't stable after all. We need a *real* stable shell, a hit-it-with-a-sledgehammer-and-it-stays-standing kind of stable shell. To that end, we need to do a trick that I learned just for the purpose of this walkthrough:
+
+1. After you've run the pty bit with python, run "export TERM=xterm"
+2. Background the reverse shell with ctrl+z
+3. On your own machine, run "stty raw -echo; fg"
+4. Don't worry, it's supposed to look like that, just run whoami or any other command and it'll go back to normal
+
+Boom, stable shell. Now let's get our root flag!
+
+After choosing the "read" option, GTFObins tells us how to use a root instance of nano to escalate our privileges:
+
+ctrl+r
+ctrl+x
+reset; sh 1>&0 2>&0
+
+Who am I now? Why, I'm root. Let's cat out /root/root.txt and go home.
+
+Answer: THM{ba87e0dfe5903adfa6b8b450ad7567bafde87}
